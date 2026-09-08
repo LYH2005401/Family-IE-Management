@@ -5,6 +5,8 @@ import com.familyfinance.family.FamilyMutationAuthorization;
 import com.familyfinance.loan.LoanRepository;
 import com.familyfinance.household.FamilyMember;
 import com.familyfinance.household.FamilyMemberRepository;
+import com.familyfinance.household.AppUser;
+import com.familyfinance.household.Household;
 import com.familyfinance.shared.RequestValidationException;
 import com.familyfinance.shared.ResourceConflictException;
 import com.familyfinance.shared.ResourceNotFoundException;
@@ -87,6 +89,25 @@ public class AssetService {
     public AssetResponse get(Authentication authentication, long assetId) {
         long householdId = currentMembership.require(authentication).householdId();
         return AssetResponse.from(findOne(householdId, assetId));
+    }
+
+    @Transactional
+    public Asset createLoanPurchaseAsset(
+            Household household, AppUser createdBy, AssetType type, long valueCents,
+            FamilyMember ownerMember, LocalDate acquiredOn) {
+        long sequence = assets.countByHouseholdIdAndType(household.getId(), type) + 1;
+        String prefix = type == AssetType.PROPERTY ? "房产" : type == AssetType.VEHICLE ? "车辆" : "其他资产";
+        Asset asset = new Asset(household, prefix + sequence, type, ownerMember, acquiredOn,
+                valueCents, valueCents, createdBy);
+        if (type == AssetType.PROPERTY) {
+            asset.attachProperty(new PropertyAsset(asset, household.getId(), "待补充", BigDecimal.ONE, "待补充"));
+        } else if (type == AssetType.VEHICLE) {
+            asset.attachVehicle(new VehicleAsset(asset, household.getId(), "待补充", null, null));
+        }
+        Asset saved = assets.saveAndFlush(asset);
+        valuations.saveAndFlush(new AssetValuation(household, saved, acquiredOn, valueCents,
+                AssetValuationSource.MANUAL, null, createdBy, clock.instant()));
+        return saved;
     }
 
     @Transactional

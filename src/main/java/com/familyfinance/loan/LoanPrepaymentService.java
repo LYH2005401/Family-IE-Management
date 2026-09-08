@@ -21,13 +21,24 @@ public class LoanPrepaymentService {
   Loan loan=loans.findLockedByIdAndHouseholdId(loanId,access.context().householdId()).orElseThrow(()->new ResourceNotFoundException("贷款不存在")); String key=request.idempotencyKey().trim();
   LoanPrepayment existing=prepayments.findByHouseholdIdAndLoanIdAndRequestKey(access.context().householdId(),loanId,key).orElse(null); if(existing!=null)return LoanPrepaymentResponse.from(existing,loan);
   if(loan.getStatus()!=LoanStatus.ACTIVE)throw new ResourceConflictException("LOAN_CLOSED","贷款已归档或结清"); long amount=parse(request.amount()); if(amount>loan.getCurrentPrincipalCents())throw new RequestValidationException(Map.of("amount","提前还款金额不能超过剩余本金")); LocalDate paidOn=request.paidOn();if(paidOn==null||paidOn.isAfter(LocalDate.now(clock.withZone(ZoneId.of("Asia/Shanghai")))))throw new RequestValidationException(Map.of("paidOn","还款日期不能为空且不能晚于今天"));
+    LocalDate today = LocalDate.now(clock.withZone(ZoneId.of("Asia/Shanghai")));
+    if (accounts.currentBalanceCents(access.context().householdId(), loan.getPaymentAccount().getId(), today) < amount) throw new ResourceConflictException("INSUFFICIENT_FUNDS", "付款现金账户余额不足，无法提前还款");
   LoanPrepayment prepayment=prepayments.save(new LoanPrepayment(loan,key,amount,paidOn,clock.instant()));
   FinancialTransaction transaction=transactions.saveAndFlush(FinancialTransaction.loanPrepayment(access.household(),account(loan,access.context().householdId()),access.membership().getUser(),member(loan,access.context().householdId()),category(loan,access.context().householdId()),amount,paidOn,prepayment.getId(),clock.instant()));
   prepayment.attach(transaction);
   int remainingTerms=(int)loan.getInstallments().stream().filter(i->i.getStatus()==LoanInstallmentStatus.PENDING).count();
-  loan.applyPrincipalPayment(amount,clock.instant()); loan.cancelPendingInstallments(); if(loan.getCurrentPrincipalCents()>0)regenerate(loan,paidOn,remainingTerms); loans.flush(); return LoanPrepaymentResponse.from(prepayment,loan);
+  long existingPayment=loan.getInstallments().stream().filter(i->i.getStatus()==LoanInstallmentStatus.PENDING).mapToLong(i->Math.addExact(i.getPrincipalCents(),i.getInterestCents())).findFirst().orElse(0L);
+  loan.applyPrincipalPayment(amount,clock.instant()); loan.cancelPendingInstallments(); if(loan.getCurrentPrincipalCents()>0)regenerate(loan,paidOn,remainingTerms,request.plan(),existingPayment); loans.flush(); return LoanPrepaymentResponse.from(prepayment,loan);
  }
- private void regenerate(Loan loan,LocalDate paidOn,int remainingTerms){List<InstallmentDraft> base=calculator.calculate(loan.getCurrentPrincipalCents(),loan.getAnnualRate(),Math.max(1,remainingTerms),paidOn,loan.getRepaymentMethod()==RepaymentMethod.CUSTOM?RepaymentMethod.EQUAL_PRINCIPAL:loan.getRepaymentMethod());int no=loan.nextInstallmentNo();loan.appendSchedule(base.stream().map(d->new InstallmentDraft(no+d.installmentNo()-1,d.dueOn(),d.principalCents(),d.interestCents(),d.remainingPrincipalCents())).toList());}
+ private void regenerate(Loan loan,LocalDate paidOn,int remainingTerms,PrepaymentPlan plan,long existingPayment){
+  List<InstallmentDraft> base;
+  if (plan == PrepaymentPlan.REDUCE_PAYMENT) {
+   base=calculator.calculate(loan.getCurrentPrincipalCents(),loan.getAnnualRate(),Math.max(1,remainingTerms),paidOn,loan.getRepaymentMethod()==RepaymentMethod.CUSTOM?RepaymentMethod.EQUAL_PRINCIPAL:loan.getRepaymentMethod());
+  } else {
+   base=calculator.calculateWithFixedPayment(loan.getCurrentPrincipalCents(),loan.getAnnualRate(),Math.max(1, existingPayment),paidOn);
+  }
+  int no=loan.nextInstallmentNo();loan.appendSchedule(base.stream().map(d->new InstallmentDraft(no+d.installmentNo()-1,d.dueOn(),d.principalCents(),d.interestCents(),d.remainingPrincipalCents())).toList());
+ }
  private static long parse(String amount){try{long value=Money.parseCents(amount);if(value<=0)throw new IllegalArgumentException();return value;}catch(IllegalArgumentException e){throw new RequestValidationException(Map.of("amount","提前还款金额必须为正且最多两位小数"));}}
  private FinancialAccount account(Loan l,long h){return accounts.findByIdAndHouseholdIdAndArchivedAtIsNull(l.getPaymentAccount().getId(),h).orElseThrow(LoanPrepaymentService::stale);} private Category category(Loan l,long h){return categories.findByIdAndHouseholdId(l.getPaymentCategory().getId(),h).filter(x->x.getKind()==TransactionKind.EXPENSE).orElseThrow(LoanPrepaymentService::stale);} private FamilyMember member(Loan l,long h){if(l.getMember()!=null)return members.findByIdAndHouseholdId(l.getMember().getId(),h).orElseThrow(LoanPrepaymentService::stale);if(l.getAssignedUser()!=null)return members.findFirstByHouseholdIdAndLinkedUserId(h,l.getAssignedUser().getId()).orElseThrow(LoanPrepaymentService::stale);throw stale();} private static ResourceConflictException stale(){return new ResourceConflictException("STALE_REFERENCE","贷款关联的账户、分类或成员已失效");}
 }

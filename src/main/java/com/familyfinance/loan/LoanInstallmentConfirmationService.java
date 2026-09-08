@@ -31,8 +31,13 @@ public class LoanInstallmentConfirmationService {
   if(loan.getAssignedUser().getStatus()!=AppUserStatus.ACTIVE) throw stale();
   FinancialTransaction existing=transactions.findBySourceTypeAndSourceId(TransactionSourceType.LOAN_PAYMENT,installmentId).orElse(null);
   if(existing!=null){installment.confirm(existing);return LoanInstallmentResponse.from(installment);}
+    long paymentCents = Math.addExact(installment.getPrincipalCents(), installment.getInterestCents());
+    LocalDate today = LocalDate.now(clock.withZone(ZoneId.of("Asia/Shanghai")));
+    if (accounts.currentBalanceCents(householdId, loan.getPaymentAccount().getId(), today) < paymentCents) {
+     throw new ResourceConflictException("INSUFFICIENT_FUNDS", "付款现金账户余额不足，无法确认还款");
+    }
   try {
-   FinancialTransaction transaction=transactions.saveAndFlush(FinancialTransaction.loanPayment(access.household(),account(loan,householdId),access.membership().getUser(),member(loan,householdId),category(loan,householdId),Math.addExact(installment.getPrincipalCents(),installment.getInterestCents()),installment.getDueOn(),installmentId,clock.instant()));
+     FinancialTransaction transaction=transactions.saveAndFlush(FinancialTransaction.loanPayment(access.household(),account(loan,householdId),access.membership().getUser(),member(loan,householdId),category(loan,householdId),paymentCents,installment.getDueOn(),installmentId,clock.instant()));
    installment.confirm(transaction); loan.applyPrincipalPayment(installment.getPrincipalCents(),clock.instant()); notifications.resolveReference(householdId,"LOAN_INSTALLMENT",installmentId); installments.flush(); return LoanInstallmentResponse.from(installment);
   } catch(DataIntegrityViolationException e) { throw new ResourceConflictException("LOAN_CONFIRMATION_RACE","贷款还款正在由另一请求确认，请重试"); }
  }

@@ -14,4 +14,6 @@ public interface AssetRepository extends JpaRepository<Asset, Long> {
     Page<Asset> findByHouseholdIdAndTypeAndStatus(
             Long householdId, AssetType type, AssetStatus status, Pageable pageable);
     java.util.List<Asset> findAllByHouseholdIdAndStatus(Long householdId, AssetStatus status);
+
+    long countByHouseholdIdAndType(Long householdId, AssetType type);
 }

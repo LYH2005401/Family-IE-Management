@@ -33,6 +33,24 @@ public final class AmortizationCalculator {
         return List.copyOf(drafts);
     }
 
+    public List<InstallmentDraft> calculateWithFixedPayment(
+            long principalCents, BigDecimal annualRate, long paymentCents, LocalDate startOn) {
+        if (principalCents <= 0 || paymentCents <= 0) throw new IllegalArgumentException("principal and payment must be positive");
+        BigDecimal monthlyRate = annualRate.setScale(RATE_SCALE, RoundingMode.UNNECESSARY).divide(TWELVE, WORK_SCALE, RoundingMode.HALF_UP);
+        List<InstallmentDraft> drafts = new ArrayList<>();
+        long remaining = principalCents;
+        for (int index = 1; remaining > 0 && index <= 360; index++) {
+            long interest = cents(BigDecimal.valueOf(remaining).multiply(monthlyRate));
+            long principal = Math.min(remaining, paymentCents - interest);
+            if (principal <= 0) throw new IllegalArgumentException("payment does not cover interest");
+            remaining = Math.subtractExact(remaining, principal);
+            drafts.add(new InstallmentDraft(index, startOn.plusMonths(index), principal,
+                    interest, remaining));
+        }
+        if (remaining != 0) throw new IllegalArgumentException("fixed payment exceeds maximum term");
+        return List.copyOf(drafts);
+    }
+
     private static long principalFor(RepaymentMethod method, long original, int months, BigDecimal payment, long interest, long remaining) {
         if (method == RepaymentMethod.EQUAL_PRINCIPAL) return original / months;
         return Math.subtractExact(cents(payment), interest);

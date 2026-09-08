@@ -60,4 +60,12 @@ public interface FinancialAccountRepository extends JpaRepository<FinancialAccou
                 .map(row -> new AccountBalance(row.getAccountId(), new BigInteger(row.getBalanceCents()).longValueExact()))
                 .toList();
     }
+
+        default long currentBalanceCents(Long householdId, Long accountId, LocalDate occurredOn) {
+                return findActiveBalancesByHouseholdIdAndOccurredOnBefore(householdId, occurredOn).stream()
+                                .filter(balance -> balance.accountId() == accountId)
+                                .mapToLong(AccountBalance::balanceCents)
+                                .findFirst()
+                                .orElseThrow(() -> new IllegalArgumentException("cash account not found"));
+        }
 }
